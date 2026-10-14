@@ -1,0 +1,23 @@
+# Dog breeds
+Beagle
+Poodle
+Dachshund
+Corgi
+
+# Fabrics
+Denim
+Silk
+Velvet
+Tweed
+
+# Film directors
+Hitchcock
+Kubrick
+Varda
+Kurosawa
+
+# Breads
+Baguette
+Ciabatta
+Brioche
+Focaccia

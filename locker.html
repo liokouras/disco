@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Set Locker</title>
+<style>
+  :root { --bg: #fafaf7; --fg: #1d1d1b; --cell: #ffffff; --line: #d9d8d2;
+          --bad: #d93b3b; --good: #2e8540; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #17171a; --fg: #ececec; --cell: #222227; --line: #3a3a42;
+            --bad: #ff6b6b; --good: #5fd27a; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 15px/1.4 system-ui, sans-serif; }
+  main { max-width: 560px; margin: 40px auto; padding: 0 16px; }
+  h1 { font-size: 19px; margin: 0 0 6px; }
+  p { margin: 0 0 16px; opacity: .8; }
+  label { display: block; font-weight: 600; margin: 16px 0 6px; }
+  input { width: 100%; font: inherit; padding: 8px 12px; border: 1px solid var(--line);
+          border-radius: 6px; background: var(--cell); color: var(--fg); }
+  input[type=file] { padding: 6px; }
+  textarea { width: 100%; min-height: 220px; font: 14px/1.4 ui-monospace, monospace; padding: 8px 12px;
+             border: 1px solid var(--line); border-radius: 6px; background: var(--cell); color: var(--fg); }
+  .hint { font-weight: normal; opacity: .7; }
+  button, a.btn { display: inline-block; font: inherit; margin-top: 20px; padding: 8px 16px;
+           border: 1px solid var(--line); border-radius: 6px; background: var(--cell);
+           color: var(--fg); cursor: pointer; text-decoration: none; }
+  button:hover, a.btn:hover { border-color: var(--fg); }
+  button:disabled { opacity: .5; cursor: default; }
+  #summary { margin-top: 8px; }
+  #summary ul { margin: 6px 0 0; padding-left: 20px; color: var(--bad); }
+  #msg { margin-top: 16px; font-weight: 600; }
+  #msg.bad { color: var(--bad); }
+  #msg.good { color: var(--good); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Lock a category set</h1>
+  <p>Turn your categories into a locked file that only opens with its password.
+     Nothing you type leaves this page.</p>
+
+  <label for="text">Your set <span class="hint">— a line starting with # for each category,
+    then its words, one per line (<a href="set-template.txt" download>template</a>)</span></label>
+  <textarea id="text" spellcheck="false" placeholder="# Dog breeds&#10;Beagle&#10;Poodle&#10;&#10;# Fabrics&#10;Denim&#10;Silk"></textarea>
+
+  <label for="file">…or choose a file <span class="hint">(.txt in that format, .js or .json)</span></label>
+  <input id="file" type="file" accept=".txt,.js,.json">
+  <div id="summary"></div>
+
+  <label for="title">Title shown while playing (optional)</label>
+  <input id="title" placeholder="e.g. Feline's set">
+
+  <label for="pw">Password</label>
+  <input id="pw" type="password" autocomplete="new-password"
+         placeholder="3–4 random words, e.g. velvet otter plum">
+  <label for="pw2">Password again</label>
+  <input id="pw2" type="password" autocomplete="new-password">
+
+  <button id="lock" disabled>Lock set</button>
+  <div id="msg"></div>
+  <a id="download" class="btn" hidden>Download locked file</a>
+</main>
+
+<script src="lock.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+let categories = null;
+
+function say(text, kind) { $("msg").textContent = text; $("msg").className = kind || ""; }
+
+// Text format: a "# Category" line, then that category's words, one per line.
+function parseText(text) {
+  const cats = {};
+  let cur = null;
+  text.split(/\r?\n/).forEach((line, i) => {
+    line = line.trim();
+    if (!line) return;
+    if (line.startsWith("#")) {
+      cur = line.slice(1).trim();
+      if (!cur) throw new Error(`Line ${i + 1}: the category needs a name after #.`);
+      if (cur in cats) throw new Error(`The category "${cur}" appears twice.`);
+      cats[cur] = [];
+    } else if (!cur) {
+      throw new Error(`Line ${i + 1}: start with a "# Category name" line before the words.`);
+    } else {
+      cats[cur].push(line);
+    }
+  });
+  return cats;
+}
+
+// Accepts the text format (.txt), JSON, or a set file that calls registerCategorySet({...}).
+// The .js file is run here only to read its categories, so only lock files you trust.
+function parseSet(text, fileName) {
+  if (/\.txt$/i.test(fileName)) return parseText(text);
+  try { return JSON.parse(text); } catch {}
+  let cats = null;
+  new Function("registerCategorySet", text)(c => { cats = c; });
+  if (!cats) throw new Error("The file does not call registerCategorySet().");
+  return cats;
+}
+
+// Summarises the set without showing its words, unless something needs fixing.
+function check(cats) {
+  const names = Object.keys(cats);
+  if (!names.length || !names.every(n => Array.isArray(cats[n]) && cats[n].length))
+    throw new Error("Every category needs a list of words.");
+  const problems = [];
+  const sizes = new Set(names.map(n => cats[n].length));
+  if (sizes.size > 1) {
+    const counts = names.map(n => `${n}: ${cats[n].length}`).join(", ");
+    problems.push(`Categories have different numbers of words (${counts}).`);
+  }
+  const seen = new Map();
+  names.forEach(n => cats[n].forEach(w => {
+    const k = String(w).trim().toLowerCase();
+    if (seen.has(k)) problems.push(`"${w}" appears in both "${seen.get(k)}" and "${n}".`);
+    else seen.set(k, n);
+  }));
+  return { names: names.length, words: seen.size, problems };
+}
+
+// Reads the set from the box or a file and shows what is wrong with it, if anything.
+function load(read) {
+  categories = null;
+  $("lock").disabled = true;
+  $("download").hidden = true;
+  $("summary").textContent = "";
+  say("");
+  try {
+    const cats = read();
+    if (!cats) return;
+    const r = check(cats);
+    $("summary").textContent = `${r.names} categories, ${r.words} words.`;
+    if (r.problems.length) {
+      const ul = document.createElement("ul");
+      r.problems.forEach(p => { const li = document.createElement("li"); li.textContent = p; ul.appendChild(li); });
+      $("summary").appendChild(ul);
+    }
+    categories = cats;
+    $("lock").disabled = false;
+  } catch (e) {
+    say("Can't use this set yet: " + e.message, "bad");
+  }
+}
+
+$("text").oninput = () => {
+  $("file").value = "";
+  load(() => $("text").value.trim() ? parseText($("text").value) : null);
+};
+
+$("file").onchange = async () => {
+  const f = $("file").files[0];
+  const text = f ? await f.text() : "";
+  $("text").value = "";
+  load(() => f ? parseSet(text, f.name) : null);
+};
+
+$("lock").onclick = async () => {
+  const pw = $("pw").value;
+  $("download").hidden = true;
+  if (!normalizePassword(pw)) return say("Enter a password.", "bad");
+  if (normalizePassword(pw) !== normalizePassword($("pw2").value)) return say("The passwords don't match.", "bad");
+  if (normalizePassword(pw).length < 12) return say("Use a longer password (at least 12 characters).", "bad");
+  $("lock").disabled = true;
+  say("Locking…");
+  try {
+    const { file, text } = await lockSet(pw, { title: $("title").value.trim(), categories });
+    const a = $("download");
+    if (a.href) URL.revokeObjectURL(a.href);
+    a.href = URL.createObjectURL(new Blob([text], { type: "text/javascript" }));
+    a.download = file;
+    a.hidden = false;
+    say(`Locked! Download ${file} and send it to whoever runs the game, along with the password.`, "good");
+  } catch (e) {
+    say("Locking failed: " + e.message, "bad");
+  } finally {
+    $("lock").disabled = false;
+  }
+};
+</script>
+</body>
+</html>

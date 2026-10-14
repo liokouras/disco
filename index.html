@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Category Merge</title>
+<style>
+  :root {
+    --bg: #fafaf7; --fg: #1d1d1b; --cell: #ffffff; --line: #d9d8d2;
+    --sel: #ffd84d; --bad: #ff6b6b; --cell-size: 112px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #17171a; --fg: #ececec; --cell: #222227; --line: #3a3a42; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 15px/1.35 system-ui, sans-serif; }
+  header { position: sticky; top: 0; z-index: 5; background: var(--bg);
+           padding: 12px 16px; border-bottom: 1px solid var(--line);
+           display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: center; }
+  h1 { font-size: 17px; margin: 0; flex: 1 1 100%; }
+  .stat b { font-variant-numeric: tabular-nums; }
+  button { font: inherit; padding: 4px 12px; border: 1px solid var(--line);
+           border-radius: 6px; background: var(--cell); color: var(--fg); cursor: pointer; }
+  button:hover { border-color: var(--fg); }
+  #msg { flex: 1 1 100%; min-height: 1.3em; font-weight: 600; }
+  #wrap { overflow: auto; padding: 16px; }
+  #grid { display: flex; flex-direction: column; gap: 4px; width: max-content; }
+  .row { display: flex; gap: 4px; }
+  .cell { width: var(--cell-size); height: calc(var(--cell-size) * .72);
+          border: 1px solid var(--line); border-radius: 6px; background: var(--cell);
+          padding: 4px 6px; overflow: hidden; cursor: pointer; position: relative;
+          font-size: 12px; word-break: break-word; user-select: none; flex: none; }
+  .cell:hover { border-color: var(--fg); }
+  .cell.sel { background: var(--sel); color: #1d1d1b; border-color: #1d1d1b; }
+  .cell.bad { background: var(--bad); color: #fff; }
+  .cell.done { cursor: default; color: #1d1d1b; }
+  .cell .words { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+                 overflow: hidden; }
+  .cell .n { position: absolute; right: 4px; bottom: 2px; font-size: 11px; opacity: .7;
+             font-variant-numeric: tabular-nums; }
+  .cell .label { font-weight: 700; display: block; }
+  #start { max-width: 520px; margin: 40px auto; padding: 0 16px; }
+  #start h2 { font-size: 17px; margin: 0 0 12px; }
+  #codeForm { display: flex; gap: 8px; }
+  #code { flex: 1; min-width: 0; font: inherit; padding: 8px 12px; border: 1px solid var(--line);
+          border-radius: 6px; background: var(--cell); color: var(--fg); }
+  #codeForm button { padding: 8px 16px; }
+  #startMsg { margin-top: 12px; color: var(--bad); font-weight: 600; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Category Merge<span id="setName"></span></h1>
+  <span class="stat">Score: <b id="score">0</b> / <b id="needed">0</b></span>
+  <span class="stat">Mistakes: <b id="mistakes">0</b></span>
+  <button id="deselect">Deselect</button>
+  <button id="restart">New game</button>
+  <button id="changeSet">Change set</button>
+  <div id="msg"></div>
+</header>
+<div id="start">
+  <h2>Enter the name of your game</h2>
+  <form id="codeForm" autocomplete="off">
+    <input id="code" type="password" placeholder="Game name" autocapitalize="off" spellcheck="false" required>
+    <button type="submit" id="play">Play</button>
+  </form>
+  <div id="startMsg"></div>
+</div>
+<div id="wrap" hidden><div id="grid"></div></div>
+<script src="lock.js"></script>
+
+<script>
+// Each set is a password-locked file in sets/ (see lock.js and ../locker.html).
+// Players type the password; it names the file and decrypts it.
+let CATEGORIES = null;
+let pendingSetLoad = null;
+// Called by each set file when it loads.
+function registerLockedSet(b64) { if (pendingSetLoad) pendingSetLoad(b64); }
+
+const $ = id => document.getElementById(id);
+const gridEl = $("grid");
+// rows: array of rows; each row is an array of group objects.
+// When a group is removed, the rest of its row shifts left; an empty row is deleted,
+// so the rows below move up.
+let rows, selected, flashing, score, mistakes, needed, catNames, locked;
+
+function shuffle(a) {
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function newGame() {
+  catNames = Object.keys(CATEGORIES);
+  const items = [];
+  catNames.forEach((c, ci) => CATEGORIES[c].forEach(w => items.push({ word: w, cat: ci })));
+  shuffle(items);
+  const groups = items.map(it => ({
+    words: [it.word], cat: it.cat, size: CATEGORIES[catNames[it.cat]].length, done: false
+  }));
+  const cols = Math.ceil(Math.sqrt(groups.length));
+  rows = [];
+  for (let i = 0; i < groups.length; i += cols) rows.push(groups.slice(i, i + cols));
+  needed = groups.length - catNames.length;   // merges needed to finish
+  score = 0; mistakes = 0; selected = null; flashing = new Set(); locked = false;
+  $("msg").textContent = "";
+  render();
+}
+
+function render() {
+  gridEl.textContent = "";
+  rows.forEach(row => {
+    const rowEl = document.createElement("div");
+    rowEl.className = "row";
+    row.forEach(g => {
+      const el = document.createElement("div");
+      el.className = "cell";
+      el._g = g;
+      if (selected === g) el.classList.add("sel");
+      if (flashing.has(g)) el.classList.add("bad");
+      if (g.done) {
+        el.classList.add("done");
+        el.style.background = `hsl(${(g.cat * 360 / catNames.length) | 0} 70% 78%)`;
+        const label = document.createElement("span");
+        label.className = "label"; label.textContent = catNames[g.cat];
+        el.appendChild(label);
+      }
+      const words = document.createElement("div");
+      words.className = "words";
+      words.textContent = g.words.join(", ");
+      el.appendChild(words);
+      el.title = g.words.join(", ");
+      if (g.words.length > 1) {
+        const n = document.createElement("span");
+        n.className = "n"; n.textContent = g.words.length;
+        el.appendChild(n);
+      }
+      rowEl.appendChild(el);
+    });
+    gridEl.appendChild(rowEl);
+  });
+  $("score").textContent = score;
+  $("needed").textContent = needed;
+  $("mistakes").textContent = mistakes;
+}
+
+function removeGroup(g) {
+  rows.forEach(row => {
+    const i = row.indexOf(g);
+    if (i !== -1) row.splice(i, 1);     // rest of the row slides left
+  });
+  rows = rows.filter(row => row.length > 0);   // empty rows vanish, rows below move up
+}
+
+gridEl.addEventListener("click", e => {
+  if (locked) return;
+  const el = e.target.closest(".cell");
+  if (!el) return;
+  const g = el._g;
+  if (!g || g.done) return;
+
+  if (selected === null) { selected = g; render(); return; }
+  if (selected === g) { selected = null; render(); return; }
+
+  const a = selected, b = g;
+  selected = null;
+  if (a.cat === b.cat) {
+    // Correct: first-clicked group merges into the second-clicked box
+    b.words = a.words.concat(b.words);
+    removeGroup(a);
+    score++;
+    if (b.words.length === b.size) b.done = true;
+    render();
+    if (rows.every(row => row.every(x => x.done))) {
+      $("msg").textContent = `Done! ${mistakes} mistake${mistakes === 1 ? "" : "s"}.`;
+    }
+  } else {
+    mistakes++;
+    locked = true;
+    flashing = new Set([a, b]);
+    render();
+    setTimeout(() => { flashing = new Set(); locked = false; render(); }, 450);
+  }
+});
+
+$("deselect").onclick = () => { if (CATEGORIES && !locked) { selected = null; render(); } };
+$("restart").onclick = () => { if (CATEGORIES) newGame(); };
+$("changeSet").onclick = showStart;
+
+function showStart() {
+  CATEGORIES = null;
+  $("wrap").hidden = true;
+  $("start").hidden = false;
+  $("setName").textContent = "";
+  $("msg").textContent = "";
+  $("score").textContent = $("needed").textContent = $("mistakes").textContent = 0;
+  $("code").focus();
+}
+
+// Load sets/<file> with a <script> tag (works when the page is opened from disk,
+// unlike fetch()) and resolve with the encrypted text it registers.
+function loadLockedFile(file) {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    let b64 = null;
+    pendingSetLoad = text => { b64 = text; };
+    script.onload = () => {
+      pendingSetLoad = null; script.remove();
+      b64 ? resolve(b64) : reject(new Error("bad file"));
+    };
+    script.onerror = () => {
+      pendingSetLoad = null; script.remove();
+      reject(new Error("missing"));
+    };
+    script.src = "sets/" + file;
+    document.body.appendChild(script);
+  });
+}
+
+async function openSet(pw) {
+  $("startMsg").textContent = "Unlocking…";
+  $("play").disabled = true;
+  try {
+    const { key, id } = await deriveLock(pw);
+    let b64;
+    try { b64 = await loadLockedFile(id + ".js"); }
+    catch { $("startMsg").textContent = "No game with that name."; return; }
+    let data;
+    try { data = await unlockSet(key, b64); }
+    catch { $("startMsg").textContent = "That game's file is damaged."; return; }
+    CATEGORIES = data.categories;
+    $("startMsg").textContent = "";
+    $("code").value = "";
+    $("setName").textContent = data.title ? " — " + data.title : "";
+    $("start").hidden = true;
+    $("wrap").hidden = false;
+    newGame();
+  } finally {
+    $("play").disabled = false;
+  }
+}
+
+$("codeForm").onsubmit = e => {
+  e.preventDefault();
+  if ($("code").value.trim() && !$("play").disabled) openSet($("code").value);
+};
+showStart();
+</script>
+</body>
+</html>
